@@ -8,6 +8,14 @@ import { useAppStore } from '../app/store'
 import { useTranslation } from '../i18n'
 import { loadGoogleMaps, initAutocomplete } from '../lib/maps'
 
+// 인기 목적지 리스트 (자동완성용)
+const popularCities = [
+  '서울', 'Seoul', '인천', 'Incheon', '부산', 'Busan', '제주', 'Jeju',
+  '도쿄', 'Tokyo', '오사카', 'Osaka', '교토', 'Kyoto', '후쿠오카', 'Fukuoka', '삿포로', 'Sapporo',
+  '파리', 'Paris', '런던', 'London', '뉴욕', 'New York', '로마', 'Rome', '바르셀로나', 'Barcelona',
+  '방콕', 'Bangkok', '싱가포르', 'Singapore', '홍콩', 'Hong Kong', '타이베이', 'Taipei'
+]
+
 export default function SearchForm() {
   const t = useTranslation()
   const navigate = useNavigate()
@@ -23,11 +31,15 @@ export default function SearchForm() {
 
   const fromRef = useRef<HTMLInputElement>(null)
   const toRef = useRef<HTMLInputElement>(null)
+  const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false)
 
-  // Google Places Autocomplete 초기화
+  // Google Places Autocomplete 초기화 (있을 경우)
   useEffect(() => {
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-    if (!apiKey) return
+    if (!apiKey) {
+      console.info('Google Maps API 키가 없습니다. 기본 자동완성을 사용합니다.')
+      return
+    }
 
     loadGoogleMaps(apiKey)
       .then(() => {
@@ -37,6 +49,8 @@ export default function SearchForm() {
             const place = autocomplete.getPlace()
             if (place.formatted_address) {
               setFrom(place.formatted_address)
+            } else if (place.name) {
+              setFrom(place.name)
             }
           })
         }
@@ -46,12 +60,15 @@ export default function SearchForm() {
             const place = autocomplete.getPlace()
             if (place.formatted_address) {
               setTo(place.formatted_address)
+            } else if (place.name) {
+              setTo(place.name)
             }
           })
         }
+        setGoogleMapsLoaded(true)
       })
       .catch((error) => {
-        console.warn('Google Maps not available:', error)
+        console.warn('Google Maps를 로드할 수 없습니다. 기본 자동완성을 사용합니다:', error)
       })
   }, [])
 
@@ -117,9 +134,17 @@ export default function SearchForm() {
             value={from}
             onChange={(e) => setFrom(e.target.value)}
             placeholder="서울"
+            list={googleMapsLoaded ? undefined : "cities-from"}
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
             required
           />
+          {!googleMapsLoaded && (
+            <datalist id="cities-from">
+              {popularCities.map((city) => (
+                <option key={city} value={city} />
+              ))}
+            </datalist>
+          )}
         </div>
         <div>
           <label htmlFor="to" className="block text-sm font-medium text-gray-700 mb-1">
@@ -132,9 +157,17 @@ export default function SearchForm() {
             value={to}
             onChange={(e) => setTo(e.target.value)}
             placeholder="도쿄"
+            list={googleMapsLoaded ? undefined : "cities-to"}
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
             required
           />
+          {!googleMapsLoaded && (
+            <datalist id="cities-to">
+              {popularCities.map((city) => (
+                <option key={city} value={city} />
+              ))}
+            </datalist>
+          )}
         </div>
       </div>
 
