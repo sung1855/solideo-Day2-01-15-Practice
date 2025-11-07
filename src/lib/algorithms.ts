@@ -73,21 +73,76 @@ interface BuildItineraryOptions {
 }
 
 /**
- * 여행 일정 자동 생성
- * Triple 스타일의 데이 바이 데이 일정을 생성합니다.
+ * 목적지별 일정 템플릿
+ */
+const destinationTemplates: Record<string, {
+  morningStart: string
+  eveningEnd: string
+  recommendedActivities: number // 하루 권장 활동 수
+  transportation: string
+}> = {
+  tokyo: {
+    morningStart: '08:00',
+    eveningEnd: '21:00',
+    recommendedActivities: 5,
+    transportation: '전철/도보',
+  },
+  osaka: {
+    morningStart: '08:30',
+    eveningEnd: '21:30',
+    recommendedActivities: 5,
+    transportation: '전철/도보',
+  },
+  jeju: {
+    morningStart: '09:00',
+    eveningEnd: '19:00',
+    recommendedActivities: 4,
+    transportation: '렌트카/택시',
+  },
+  busan: {
+    morningStart: '09:00',
+    eveningEnd: '20:00',
+    recommendedActivities: 4,
+    transportation: '전철/도보',
+  },
+  paris: {
+    morningStart: '09:00',
+    eveningEnd: '22:00',
+    recommendedActivities: 5,
+    transportation: '메트로/도보',
+  },
+  fukuoka: {
+    morningStart: '09:00',
+    eveningEnd: '21:00',
+    recommendedActivities: 4,
+    transportation: '전철/도보',
+  },
+}
+
+/**
+ * 여행 일정 자동 생성 (개선된 버전)
+ * 목적지별로 세분화된 일정을 생성합니다.
  */
 export function buildItinerary(options: BuildItineraryOptions): DayItinerary[] {
   const { destination, days, preferences, places = [] } = options
   const itinerary: DayItinerary[] = []
 
-  // 하루 일정 시간대 슬롯
-  const timeSlots = [
-    { label: '아침', start: '09:00', end: '11:00' },
-    { label: '점심', start: '11:00', end: '13:00' },
-    { label: '오후', start: '13:00', end: '17:00' },
-    { label: '저녁', start: '17:00', end: '19:00' },
-    { label: '야간', start: '19:00', end: '21:00' },
-  ]
+  // 목적지 정규화
+  const normalizedDest = destination.toLowerCase().trim()
+  const template = destinationTemplates[normalizedDest] || {
+    morningStart: '09:00',
+    eveningEnd: '20:00',
+    recommendedActivities: 4,
+    transportation: '대중교통/도보',
+  }
+
+  // 페이스에 따른 활동 수 조정
+  let activitiesPerDay = template.recommendedActivities
+  if (preferences?.pace === 'relaxed') {
+    activitiesPerDay = Math.max(3, activitiesPerDay - 1)
+  } else if (preferences?.pace === 'packed') {
+    activitiesPerDay = activitiesPerDay + 1
+  }
 
   // 선호도에 따른 가중치
   const categoryWeights: Record<string, number> = {
@@ -98,7 +153,7 @@ export function buildItinerary(options: BuildItineraryOptions): DayItinerary[] {
   }
 
   if (preferences?.tags) {
-    if (preferences.tags.includes('culture')) {
+    if (preferences.tags.includes('culture') || preferences.tags.includes('history')) {
       categoryWeights.attraction = 1.5
     }
     if (preferences.tags.includes('food')) {
@@ -107,12 +162,18 @@ export function buildItinerary(options: BuildItineraryOptions): DayItinerary[] {
     if (preferences.tags.includes('nature')) {
       categoryWeights.nature = 1.5
     }
+    if (preferences.tags.includes('shopping')) {
+      categoryWeights.experience = 1.2
+    }
   }
 
-  // 장소가 없으면 샘플 생성
+  // 장소 가중치 계산 및 정렬
   let availablePlaces = places.length > 0 ? [...places] : generateSamplePlaces(destination)
+  if (availablePlaces.length === 0) {
+    console.warn(`No places found for ${destination}`)
+    return []
+  }
 
-  // 가중치 적용 및 정렬
   availablePlaces = availablePlaces
     .map((place) => ({
       ...place,
@@ -122,25 +183,54 @@ export function buildItinerary(options: BuildItineraryOptions): DayItinerary[] {
 
   for (let day = 1; day <= days; day++) {
     const dayItems: ItineraryItem[] = []
+    let currentTime = timeToMinutes(template.morningStart)
     let currentPosition: { lat: number; lng: number } | null = null
 
-    timeSlots.forEach((slot, slotIndex) => {
-      // 점심과 저녁 시간대에는 레스토랑 우선
-      const preferRestaurant = slot.label === '점심' || slot.label === '저녁'
+    for (let activityIndex = 0; activityIndex < activitiesPerDay && availablePlaces.length > 0; activityIndex++) {
+      // 시간대에 따른 활동 타입 결정
+      const hour = Math.floor(currentTime / 60)
+      let preferCategory: string | null = null
 
-      // 가까운 장소 찾기 (이동 최소화)
+      if (hour >= 7 && hour < 9) {
+        preferCategory = 'restaurant' // 아침
+      } else if (hour >= 12 && hour < 14) {
+        preferCategory = 'restaurant' // 점심
+      } else if (hour >= 18 && hour < 21) {
+        preferCategory = 'restaurant' // 저녁
+      }
+
+      // 장소 선택
       let selectedPlace: PlaceInfo | null = null
+      let selectedIndex = -1
 
-      if (preferRestaurant) {
-        // 레스토랑 찾기
+      if (preferCategory === 'restaurant') {
+        // 레스토랑 우선 찾기
         const restaurants = availablePlaces.filter((p) => p.category === 'restaurant')
         if (restaurants.length > 0) {
+          // 현재 위치에서 가까운 레스토랑 선택
+          if (currentPosition) {
+            restaurants.sort((a, b) => {
+              const distA = calculateDistanceKm(
+                currentPosition!.lat,
+                currentPosition!.lng,
+                a.position.lat,
+                a.position.lng
+              )
+              const distB = calculateDistanceKm(
+                currentPosition!.lat,
+                currentPosition!.lng,
+                b.position.lat,
+                b.position.lng
+              )
+              return distA - distB
+            })
+          }
           selectedPlace = restaurants[0]
-          availablePlaces = availablePlaces.filter((p) => p.id !== selectedPlace!.id)
+          selectedIndex = availablePlaces.findIndex((p) => p.id === selectedPlace!.id)
         }
       }
 
-      if (!selectedPlace && availablePlaces.length > 0) {
+      if (!selectedPlace) {
         // 현재 위치에서 가까운 장소 선택
         if (currentPosition) {
           availablePlaces.sort((a, b) => {
@@ -156,42 +246,96 @@ export function buildItinerary(options: BuildItineraryOptions): DayItinerary[] {
               b.position.lat,
               b.position.lng
             )
-            return distA - distB
+            // 거리와 가중치 모두 고려
+            return (distA / (a as any).weight) - (distB / (b as any).weight)
           })
         }
-
         selectedPlace = availablePlaces[0]
-        availablePlaces = availablePlaces.filter((p) => p.id !== selectedPlace!.id)
+        selectedIndex = 0
       }
 
-      if (selectedPlace) {
-        const transportMode = currentPosition
-          ? calculateDistanceKm(
-              currentPosition.lat,
-              currentPosition.lng,
-              selectedPlace.position.lat,
-              selectedPlace.position.lng
-            ) > 5
-            ? '지하철/버스'
-            : '도보'
-          : '이동'
+      if (selectedPlace && selectedIndex >= 0) {
+        // 활동 시간 계산
+        let duration = 60 // 기본 1시간
+
+        if (selectedPlace.category === 'restaurant') {
+          duration = 90 // 식사 1.5시간
+        } else if (selectedPlace.category === 'attraction') {
+          duration = 120 // 관광 2시간
+        } else if (selectedPlace.category === 'nature') {
+          duration = 150 // 자연 2.5시간
+        } else if (selectedPlace.category === 'experience') {
+          duration = 120 // 체험 2시간
+        }
+
+        // 이동 시간 계산
+        let travelTime = 0
+        let transportMode = '도보'
+        if (currentPosition) {
+          const distance = calculateDistanceKm(
+            currentPosition.lat,
+            currentPosition.lng,
+            selectedPlace.position.lat,
+            selectedPlace.position.lng
+          )
+
+          if (distance > 10) {
+            travelTime = Math.ceil(distance / 30 * 60) // 시속 30km로 계산
+            transportMode = template.transportation.split('/')[0]
+          } else if (distance > 2) {
+            travelTime = Math.ceil(distance / 15 * 60) // 시속 15km
+            transportMode = template.transportation.split('/')[1] || '도보'
+          } else {
+            travelTime = Math.ceil(distance * 12) // 도보 시속 5km
+            transportMode = '도보'
+          }
+        }
+
+        // 이동 시간 추가
+        currentTime += travelTime
+
+        const startTime = minutesToTime(currentTime)
+        currentTime += duration
+        const endTime = minutesToTime(currentTime)
+
+        // 비용 계산
+        let cost = 0
+        if (selectedPlace.category === 'restaurant') {
+          if (preferences?.budget === 'high') {
+            cost = 50000
+          } else if (preferences?.budget === 'low') {
+            cost = 15000
+          } else {
+            cost = 25000
+          }
+        } else if (selectedPlace.category === 'attraction') {
+          cost = selectedPlace.name.includes('박물관') || selectedPlace.name.includes('타워') ? 15000 : 5000
+        }
 
         dayItems.push({
           title: selectedPlace.name,
           placeId: selectedPlace.id,
-          startTime: slot.start,
-          endTime: slot.end,
-          transport: slotIndex > 0 ? transportMode : undefined,
-          cost: preferRestaurant ? (preferences?.budget === 'high' ? 50000 : 20000) : 0,
-          note: selectedPlace.address,
+          startTime,
+          endTime,
+          transport: activityIndex > 0 ? transportMode : undefined,
+          cost: cost > 0 ? cost : undefined,
+          note: (selectedPlace as any).description || selectedPlace.address,
           position: selectedPlace.position,
         })
 
         currentPosition = selectedPlace.position
-      }
-    })
+        availablePlaces.splice(selectedIndex, 1)
 
-    itinerary.push({ day, items: dayItems })
+        // 저녁 시간 초과 시 중단
+        if (currentTime >= timeToMinutes(template.eveningEnd)) {
+          break
+        }
+      }
+    }
+
+    if (dayItems.length > 0) {
+      itinerary.push({ day, items: dayItems })
+    }
   }
 
   return itinerary
